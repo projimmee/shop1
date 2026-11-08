@@ -3138,6 +3138,21 @@ window.searchOrder = searchOrder;
 
 
 // ===== Reset ทั้งหมด (ต้องใส่รหัสผ่าน) =====
+/** ลบเอกสารใน collection ทีละชุด (Firestore batch สูงสุด 500) */
+async function deleteCollectionInChunks(colRef, chunkSize = 400) {
+  let total = 0;
+  while (true) {
+    const snap = await colRef.limit(chunkSize).get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+    total += snap.size;
+    if (snap.size < chunkSize) break;
+  }
+  return total;
+}
+
 async function resetAllData() {
   const pw = prompt('กรุณากรอกรหัสผ่านเพื่อรีเซ็ตออเดอร์:\n(รหัสเดียวกับหน้าผู้ขาย)');
   if (pw === null) return;
@@ -3147,33 +3162,47 @@ async function resetAllData() {
     alert('รหัสผ่านไม่ถูกต้อง');
     return;
   }
-  if (!confirm('ยืนยันรีเซ็ตออเดอร์ทั้งหมด?\n\n- ออเดอร์ทั้งหมดจะถูกลบ\n- หมายเลขออเดอร์เริ่มที่ 000 ใหม่\n\n(สินค้าและหมวดหมู่จะไม่ถูกลบ)')) {
+  if (!confirm('ยืนยันรีเซ็ตออเดอร์ทั้งหมด?\n\n- ออเดอร์ทั้งหมดจะถูกลบจาก Firebase\n- หมายเลขออเดอร์เริ่มที่ 000 ใหม่\n- ยอดรายได้จะหายตามออเดอร์ที่ลบ\n\n(สินค้าและหมวดหมู่จะไม่ถูกลบ)')) {
     return;
   }
-
-  ordersCache = [];
 
   if (!firebaseReady || !db) {
     alert('ต้องเชื่อม Firebase ก่อน');
     return;
   }
+
   try {
-    const batch = db.batch();
-    const orderSnap = await db.collection('orders').get();
-    orderSnap.docs.forEach(d => batch.delete(d.ref));
-    batch.set(db.collection('settings').doc('orderCounter'), {
+    // ลบออเดอร์ทั้งหมดทีละชุด (รองรับมากกว่า 500 รายการ)
+    const deleted = await deleteCollectionInChunks(db.collection('orders'), 400);
+
+    // รีเซ็ตตัวนับหมายเลขออเดอร์
+    await db.collection('settings').doc('orderCounter').set({
       value: 0,
       updatedAt: new Date().toISOString()
     }, { merge: true });
-    await batch.commit();
+
+    // เคลียร์ cache ในเครื่อง
+    ordersCache = [];
+    if (typeof trackActiveOrders !== 'undefined') trackActiveOrders = [];
+    if (typeof stopTrackListener === 'function') {
+      try { stopTrackListener(); } catch (_) {}
+    }
+
+    // รีเซ็ตจุดเริ่มนับรายได้ (ถ้ามี)
+    if (typeof setRevenueClearedAt === 'function') {
+      try { setRevenueClearedAt(new Date().toISOString()); } catch (_) {}
+    }
+
+    // รีเฟรช UI
+    if (typeof renderOrders === 'function') renderOrders();
+    if (typeof renderRevenue === 'function') renderRevenue();
+    if (typeof updateOrdersStats === 'function') updateOrdersStats();
+
+    alert('รีเซ็ตออเดอร์เรียบร้อยแล้ว\nลบ ' + deleted + ' ออเดอร์ · หมายเลขเริ่มที่ 000 ใหม่');
   } catch (e) {
     console.error('Firebase reset orders error:', e);
     alert('รีเซ็ตไม่สำเร็จ: ' + (e.message || e));
-    return;
   }
-
-  alert('รีเซ็ตออเดอร์เรียบร้อยแล้ว');
-  renderOrders();
 }
 
 // ===== Init =====
