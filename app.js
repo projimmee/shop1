@@ -1690,6 +1690,23 @@ function showAdminDashboard() {
   document.getElementById('admin-dashboard').style.display = 'block';
   updateAdminWelcome();
 
+  // ปลดล็อกเสียงหลัง user gesture (ล็อกอิน) เพื่อให้เสียงออเดอร์ใหม่เล่นได้
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      const unlock = new AudioCtx();
+      if (unlock.state === 'suspended') unlock.resume().catch(() => {});
+      const osc = unlock.createOscillator();
+      const g = unlock.createGain();
+      g.gain.value = 0.0001;
+      osc.connect(g);
+      g.connect(unlock.destination);
+      osc.start(0);
+      osc.stop(0.01);
+      setTimeout(() => { try { unlock.close(); } catch (_) {} }, 100);
+    }
+  } catch (_) {}
+
   initFirebase();
 
   if (firebaseReady) {
@@ -1959,21 +1976,55 @@ function renderOrders() {
 }
 
 function tryPlayNewOrderSound() {
+  // เสียงเตือนยาว + สั่น เมื่อมีออเดอร์ใหม่เข้ามา (หน้าผู้ขาย)
   try {
-    // Simple beep using Web Audio API
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = 880;
-    osc.type = 'sine';
-    gain.gain.setValueAtTime(0.15, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-    osc.start(ctx.currentTime);
-    osc.stop(ctx.currentTime + 0.3);
+    // สั่น (รองรับมือถือ / แท็บเล็ต)
+    if (navigator.vibrate) {
+      // รูปแบบ: สั่นยาว-หยุด-สั่น-หยุด-สั่นยาว (ประมาณ 1.5 วินาที)
+      navigator.vibrate([400, 120, 300, 120, 500]);
+    }
   } catch (e) {
-    // ignore if audio not allowed
+    // ignore
+  }
+
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    // บางเบราว์เซอร์ต้อง resume หลัง user gesture
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    // เสียงเตือนยาว: บี๊บ 3 ครั้ง (สูง-ต่ำ-สูง) แล้วปิดท้ายด้วยโทนยาว
+    const playBeep = (freq, start, duration, volume = 0.22) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      const t0 = ctx.currentTime + start;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(volume, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+      osc.start(t0);
+      osc.stop(t0 + duration + 0.02);
+    };
+
+    // บี๊บสั้น 3 ครั้ง
+    playBeep(880, 0.00, 0.18, 0.25);
+    playBeep(660, 0.28, 0.18, 0.22);
+    playBeep(990, 0.56, 0.20, 0.25);
+    // โทนยาวปิดท้าย (ประมาณ 0.7 วินาที)
+    playBeep(740, 0.90, 0.70, 0.20);
+
+    // ปิด context หลังเสียงจบ เพื่อไม่ให้ค้าง
+    setTimeout(() => {
+      try { ctx.close(); } catch (_) {}
+    }, 2000);
+  } catch (e) {
+    // ignore if audio not allowed (autoplay policy)
   }
 }
 
